@@ -1,13 +1,41 @@
-import NextAuth from 'next-auth'
-import { MongoDBAdapter } from '@next-auth/mongodb-adapter'
+import NextAuth, { DefaultSession, Account, User as NextAuthUser, Session } from 'next-auth'
+import { JWT } from '@auth/core/jwt'
+import { MongoDBAdapter } from '@auth/mongodb-adapter'
 import CredentialsProvider from 'next-auth/providers/credentials'
 import clientPromise from '@/lib/mongodb'
 import bcrypt from 'bcryptjs'
 import { connectToDatabase } from '@/lib/mongoose'
 import User from '@/models/User'
 
-const handler = NextAuth({
-  adapter: MongoDBAdapter(clientPromise),
+// Extend the built-in session types
+interface ExtendedSession extends Session {
+  user: {
+    id: string
+    email: string
+    name: string
+    role: 'user' | 'admin'
+    status: 'active' | 'banned' | 'deleted'
+    settings: {
+      emailNotifications: boolean
+      twoFactorEnabled: boolean
+      theme: 'light' | 'dark' | 'system'
+    }
+  } & DefaultSession['user']
+}
+
+// Extend JWT type
+interface ExtendedJWT extends JWT {
+  id: string
+  role: 'user' | 'admin'
+  status: 'active' | 'banned' | 'deleted'
+  settings: {
+    emailNotifications: boolean
+    twoFactorEnabled: boolean
+    theme: 'light' | 'dark' | 'system'
+  }
+}
+
+export const authOptions = {
   providers: [
     CredentialsProvider({
       name: 'Credentials',
@@ -54,10 +82,9 @@ const handler = NextAuth({
           if (isValid) {
             console.log('📝 Current user state:', JSON.stringify(user.toObject(), null, 2))
 
-            // Use minimum date instead of null for lockUntil
             const updateDoc = {
               loginAttempts: 0,
-              lockUntil: new Date(0), // Use minimum date instead of null
+              lockUntil: new Date(0),
               lastLogin: new Date()
             }
             console.log('📝 Update document:', JSON.stringify(updateDoc, null, 2))
@@ -108,35 +135,28 @@ const handler = NextAuth({
     })
   ],
   callbacks: {
-    async jwt({ token, user, account }) {
-      // Initial sign in
-      if (account && user) {
-        console.log('🔑 Creating JWT token for user:', user.email)
-        return {
-          ...token,
-          id: user.id,
-          email: user.email,
-          name: user.name,
-          role: user.role,
-          status: user.status,
-          settings: user.settings
-        }
+    async jwt({ token, user, account }: { 
+      token: ExtendedJWT
+      user: NextAuthUser | null
+      account: Account | null 
+    }) {
+      if (user) {
+        token.id = user.id
+        token.role = user.role as 'user' | 'admin'
+        token.status = user.status as 'active' | 'banned' | 'deleted'
+        token.settings = user.settings
       }
-      console.log('🔄 Reusing existing token:', token.email)
       return token
     },
-    async session({ session, token }) {
-      console.log('📝 Creating session from token:', token.email)
+    async session({ session, token }: {
+      session: ExtendedSession
+      token: ExtendedJWT
+    }) {
       if (session?.user) {
-        session.user.id = token.id as string
-        session.user.role = token.role as 'user' | 'admin'
-        session.user.status = token.status as 'active' | 'banned' | 'deleted'
-        session.user.settings = token.settings as {
-          emailNotifications: boolean
-          twoFactorEnabled: boolean
-          theme: 'light' | 'dark' | 'system'
-        }
-        console.log('✅ Session created:', session.user.email)
+        session.user.id = token.id
+        session.user.role = token.role
+        session.user.status = token.status
+        session.user.settings = token.settings
       }
       return session
     }
@@ -145,24 +165,8 @@ const handler = NextAuth({
     signIn: '/login',
     error: '/login',
   },
-  secret: process.env.NEXTAUTH_SECRET,
-  debug: process.env.NODE_ENV === 'development',
-  session: {
-    strategy: 'jwt',
-    maxAge: 30 * 24 * 60 * 60, // 30 days
-    updateAge: 24 * 60 * 60, // 24 hours
-  },
-  cookies: {
-    sessionToken: {
-      name: process.env.NODE_ENV === 'production' ? '__Secure-next-auth.session-token' : 'next-auth.session-token',
-      options: {
-        httpOnly: true,
-        sameSite: 'lax',
-        path: '/',
-        secure: process.env.NODE_ENV === 'production',
-      },
-    },
-  },
-})
+  secret: process.env.NEXTAUTH_SECRET
+}
 
+const handler = NextAuth(authOptions)
 export { handler as GET, handler as POST }
